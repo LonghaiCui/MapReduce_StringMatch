@@ -125,8 +125,6 @@ void AddMapInputRecord(Spec_t*		spec,
 
 	spec->inputRecordCount++;
 }
-
-
 //-------------------------------------------------
 //Called by user defined map_count function
 //
@@ -146,6 +144,52 @@ __device__ void EmitInterCount(int	keySize,
 	interKeysSizePerTask[index] += keySize;
 	interValsSizePerTask[index] += valSize;
 	interCountPerTask[index]++;
+}
+
+//-------------------------------------------------
+//Called by user defined map_atomic function
+//-------------------------------------------------
+__device__ void EmitIntermediateAtomic(void*		key,
+									    void*		val,
+										int		keySize,
+									    int		valSize,
+										char*	interKeys,
+										char*	interVals,
+										int4*	interOffsetSizes,
+									    int*	interCount)
+{
+#ifndef __DEVICE_EMULATION__
+	__syncthreads();
+#endif
+	int4 l_interOffsetSizes;
+	char* sKey = (char*)key;
+	char* sVal = (char*)val;
+
+	//atomic operation
+	atomicAdd(interCount,1);
+
+	int index = *interCount - 1;
+
+	for (int i = 0; i < keySize; i++)
+	{
+		int offset = index*keySize + i;
+		interKeys[offset] = sKey[i];
+	}
+
+	l_interOffsetSizes.x = index * keySize;
+	for (int i = 0; i < valSize; i++)
+	{
+		int offset = index*valSize + i;
+		interVals[offset] = sVal[i];
+	}
+
+	l_interOffsetSizes.z = index * valSize;
+	l_interOffsetSizes.y = keySize;
+	l_interOffsetSizes.w = valSize;
+
+	interOffsetSizes[index] = l_interOffsetSizes;
+
+	return;
 }
 
 //-------------------------------------------------
@@ -169,12 +213,10 @@ __device__ void EmitIntermediate(void*		key,
 	__syncthreads();
 #endif
 	int index = TID;
-
 	int2 l_keyValOffsets = keyValOffsets[index];
-
 	char *pKeySet = (char*)(interKeys + psKeySizes[index] + l_keyValOffsets.x);
 	char *pValSet = (char*)(interVals + psValSizes[index] + l_keyValOffsets.y);
-   
+
 	char* sKey = (char*)key;
 	char* sVal = (char*)val;
 	for (int i = 0; i < keySize; ++i)
@@ -196,11 +238,13 @@ __device__ void EmitIntermediate(void*		key,
 	if (l_curIndex != 0)
 	{
 	     l_interOffsetSizes1.x = (l_interOffsetSizes2.x + l_interOffsetSizes2.y);
+
 	     l_interOffsetSizes1.z = (l_interOffsetSizes2.z + l_interOffsetSizes2.w);
 	}
 	
 	l_interOffsetSizes1.y = keySize;
 	l_interOffsetSizes1.w = valSize;
+
 	interOffsetSizes[l_curPs] = l_interOffsetSizes1;
 
 	++l_curIndex;
@@ -232,10 +276,13 @@ __global__ void MapperCount(char*	inputKeys,
 	int index = TID;
 	int bid = BLOCK_ID;
 	int tid = THREAD_ID;
-	if (index*recordsPerTask >= recordNum) return;
+
+	if (index*recordsPerTask >= recordNum)
+		return;
 	int recordBase = bid * recordsPerTask * blockDim.x;
 	int terminate = (bid + 1) * (recordsPerTask * blockDim.x);
-	if (terminate > recordNum) terminate = recordNum;
+	if (terminate > recordNum)
+		terminate = recordNum;
 
 	for (int i = recordBase + tid; i < terminate; i+=blockDim.x)
 	{
@@ -250,6 +297,50 @@ __global__ void MapperCount(char*	inputKeys,
 			  interKeysSizePerTask,
 			  interValsSizePerTask,
 			  interCountPerTask);
+	}
+}
+
+//--------------------------------------------------
+//mapper_atomic
+//--------------------------------------------------
+__global__ void MapperAtomic(char* inputKeys,
+						   char* inputVals,
+						   int4* inputOffsetSizes,
+						   char*	interKeys,
+						   char*	interVals,
+						   int4* interOffsetSizes,
+						   int*	interCount,
+						   int recordNum,
+						   int recordsPerTask,
+						   int taskNum)
+{
+	int index = TID;
+	int bid = BLOCK_ID;
+	int tid = THREAD_ID;
+
+	if (index*recordsPerTask >= recordNum)
+		return;
+
+	int recordBase = bid * recordsPerTask * blockDim.x;
+	int terminate = (bid + 1) * (recordsPerTask * blockDim.x);
+
+	if (terminate > recordNum)
+		terminate = recordNum;
+
+	for (int i = recordBase + tid; i < terminate; i+=blockDim.x)
+	{
+		int cindex = i;
+		int4 offsetSize = inputOffsetSizes[cindex];
+		char *key = inputKeys + offsetSize.x;
+		char *val = inputVals + offsetSize.z;
+		map_atomic(key,
+		          val,
+			      offsetSize.y,
+			      offsetSize.w,
+			      interKeys,
+			      interVals,
+			      interOffsetSizes,
+			      interCount);
 	}
 }
 
@@ -275,7 +366,8 @@ __global__ void Mapper(char*	inputKeys,
 	int bid = BLOCK_ID;
 	int tid = THREAD_ID;
 
-	if (index*recordsPerTask >= recordNum) return;
+	if (index*recordsPerTask >= recordNum)
+		return;
 	int recordBase = bid * recordsPerTask * blockDim.x;
 	int terminate = (bid + 1) * (recordsPerTask * blockDim.x);
 	if (terminate > recordNum) terminate = recordNum;
@@ -289,24 +381,155 @@ __global__ void Mapper(char*	inputKeys,
 	for (int i = recordBase + tid; i < terminate; i+=blockDim.x)
 	{
 		int cindex =  i;
-
 		int4 offsetSize = inputOffsetSizes[cindex];
 		char *key = inputKeys + offsetSize.x;
 		char *val = inputVals + offsetSize.z;
 	
 		map(key,
-		val,
-		offsetSize.y,
-		offsetSize.w,
-		psKeySizes,
-		psValSizes,
-		psCounts,
-		keyValOffsets,
-		interKeys,
-		interVals,
-		interOffsetSizes,
-		curIndex);
+			val,
+			offsetSize.y,
+			offsetSize.w,
+			psKeySizes,
+			psValSizes,
+			psCounts,
+			keyValOffsets,
+			interKeys,
+			interVals,
+			interOffsetSizes,
+			curIndex);
 	}	
+}
+
+//-------------------------------------------------
+//start map atomic
+//-------------------------------------------------
+int startMapAtomic(Spec_t* spec)
+{
+	Spec_t* g_spec = spec;
+
+	if (g_spec->inputKeys == NULL) { DoLog("Error: no any input keys"); exit(0);}
+	if (g_spec->inputVals == NULL) { DoLog("Error: no any input values"); exit(0); }
+	if (g_spec->inputOffsetSizes == NULL) { DoLog( "Error: no any input pointer info"); exit(0); }
+	if (g_spec->inputRecordCount == 0) {DoLog( "Error: invalid input record count"); exit(0);}
+
+	//-------------------------------------------------------
+	//1, get map input data on host
+	//-------------------------------------------------------
+	int	h_inputRecordCount = g_spec->inputRecordCount;
+	int	h_inputKeysBufSize = g_spec->inputOffsetSizes[h_inputRecordCount-1].x +
+								 g_spec->inputOffsetSizes[h_inputRecordCount-1].y;
+	int	h_inputValsBufSize = g_spec->inputOffsetSizes[h_inputRecordCount-1].z +
+								 g_spec->inputOffsetSizes[h_inputRecordCount-1].w;
+	char*	h_inputKeys = g_spec->inputKeys;
+	char*	h_inputVals = g_spec->inputVals;
+	int4*	h_inputOffsetSizes = g_spec->inputOffsetSizes;
+	DoLog( "** Map Input: keys buf size %d bytes, vals buf size %d bytes, index buf size %d bytes, %d records",
+		h_inputKeysBufSize, h_inputValsBufSize, sizeof(int4)*h_inputRecordCount, h_inputRecordCount);
+
+	//-------------------------------------------------------
+	//2, upload map input data onto device memory
+	//-------------------------------------------------------
+	DoLog( "** Upload map input data onto device memory");
+	TimeVal_t uploadTv;
+	startTimer(&uploadTv);
+	char*	d_inputKeys = NULL;
+	char*	d_inputVals = NULL;
+	int4*	d_inputOffsetSizes = NULL;
+
+	CUDA_SAFE_CALL(cudaMalloc((void**)&d_inputKeys, h_inputKeysBufSize));
+	CUDA_SAFE_CALL(cudaMemcpy(d_inputKeys, h_inputKeys, h_inputKeysBufSize, cudaMemcpyHostToDevice));
+
+	CUDA_SAFE_CALL(cudaMalloc((void**)&d_inputVals, h_inputValsBufSize));
+	CUDA_SAFE_CALL(cudaMemcpy(d_inputVals, h_inputVals, h_inputValsBufSize, cudaMemcpyHostToDevice));
+
+	CUDA_SAFE_CALL(cudaMalloc((void**)&d_inputOffsetSizes, sizeof(int4)*h_inputRecordCount));
+	cudaMemcpy(d_inputOffsetSizes, h_inputOffsetSizes, sizeof(int4)*h_inputRecordCount, cudaMemcpyHostToDevice);
+	endTimer("PCI-E I/O", &uploadTv);
+
+	//----------------------------------------------
+	//3, determine the number of threads to run
+	//----------------------------------------------
+	dim3 h_dimBlock(g_spec->dimBlockMap,1,1);
+	dim3 h_dimGrid(1,1,1);
+	int h_recordsPerTask = g_spec->numRecTaskMap;
+	int numBlocks = CEIL(CEIL(h_inputRecordCount, h_recordsPerTask), h_dimBlock.x);
+	THREAD_CONF(h_dimGrid, h_dimBlock, numBlocks, h_dimBlock.x);
+	int h_actualNumThreads = h_dimGrid.x*h_dimBlock.x*h_dimGrid.y;
+
+	TimeVal_t mapTimer;
+	startTimer(&mapTimer);
+
+	//-----------------------------------------------
+	//4, allocate intermediate memory on device memory
+	//-----------------------------------------------
+	DoLog( "** Allocate intermediate memory on device memory");
+	char*	d_interKeys = NULL;
+	CUDA_SAFE_CALL(cudaMalloc((void**)&d_interKeys, h_actualNumThreads));
+	cudaMemset(d_interKeys, 0, h_actualNumThreads);
+
+	char*	d_interVals = NULL;
+	CUDA_SAFE_CALL(cudaMalloc((void**)&d_interVals, h_actualNumThreads));
+	cudaMemset(d_interVals, 0, h_actualNumThreads);
+
+	int4*	d_interOffsetSizes = NULL;
+	CUDA_SAFE_CALL(cudaMalloc((void**)&d_interOffsetSizes, sizeof(int4)*h_actualNumThreads));
+	cudaMemset(d_interOffsetSizes, 0, sizeof(int4)*h_actualNumThreads);
+
+	int*	d_interCount = NULL;
+	CUDA_SAFE_CALL(cudaMalloc((void**)&d_interCount, sizeof(int)));
+	cudaMemset(d_interCount, 0, sizeof(int));
+
+	//----------------------------------------------
+	//5, start map
+	//----------------------------------------------
+	int sizeSmem = h_dimBlock.x * sizeof(int) * 5;
+	MapperAtomic<<<h_dimGrid, h_dimBlock, sizeSmem>>>(d_inputKeys,
+													   d_inputVals,
+													   d_inputOffsetSizes,
+													   d_interKeys,
+													   d_interVals,
+													   d_interOffsetSizes,
+													   d_interCount,
+													   h_inputRecordCount,
+													   h_recordsPerTask,
+													   h_actualNumThreads);
+ 	cudaThreadSynchronize();
+
+ 	//allocate the resource on host
+ 	int* h_allCounts = NULL;
+ 	h_allCounts = (int*) malloc (sizeof(int));
+ 	memset(h_allCounts, 0, sizeof(int));
+ 	cudaMemcpy(h_allCounts, d_interCount, sizeof(int), cudaMemcpyDeviceToHost);
+
+	if (*h_allCounts == 0)
+	{
+		DoLog( "** No output.");
+
+		cudaFree(d_inputKeys);
+		cudaFree(d_inputVals);
+		cudaFree(d_inputOffsetSizes);
+
+		endTimer("Map", &mapTimer);
+		return 1;
+	}
+
+	g_spec->interKeys = d_interKeys;
+	g_spec->interVals = d_interVals;
+	g_spec->interOffsetSizes = d_interOffsetSizes;
+	g_spec->interRecordCount = *h_allCounts;
+	g_spec->interDiffKeyCount = *h_allCounts;
+	g_spec->interAllKeySize = *h_allCounts*sizeof(int);
+	g_spec->interAllValSize = *h_allCounts*sizeof(int);
+
+	//----------------------------------------------
+	//8, free
+	//----------------------------------------------
+	cudaFree(d_inputKeys);
+	cudaFree(d_inputVals);
+	cudaFree(d_inputOffsetSizes);
+
+	endTimer("Map", &mapTimer);
+	return 0;
 }
 
 //--------------------------------------------------
@@ -396,6 +619,7 @@ int startMap(Spec_t* spec)
 	int*	d_interCountPerTask = NULL;
 	CUDA_SAFE_CALL(cudaMalloc((void**)&d_interCountPerTask, sizeof(int)*h_actualNumThreads));
 	cudaMemset(d_interCountPerTask, 0, sizeof(int)*h_actualNumThreads);
+
 	MapperCount<<<h_dimGrid, h_dimBlock>>>(d_inputKeys,
                                                d_inputVals,
 					       d_inputOffsetSizes,
@@ -405,7 +629,7 @@ int startMap(Spec_t* spec)
 					       h_inputRecordCount, 
 					       h_recordsPerTask,
 					       h_actualNumThreads);
- 
+
  	cudaThreadSynchronize(); 
 	//-----------------------------------------------
 	//5, do prefix sum on--
@@ -961,9 +1185,20 @@ void MapReduce(Spec_t *spec)
 	//2, start map
 	//-------------------------------------------
 	DoLog( "----------start map-----------");
-	if (startMap(spec))
+	int result = 0;
+
+	if (g_spec->mapreduceMode == MAP_REDUCE_NO_ATOMIC)
 	{
-		printf("** No output.");
+		result = startMap(spec);
+	}
+	else
+	{
+		result = startMapAtomic(spec);
+	}
+
+	if (result)
+	{
+		printf("** No output.\n");
 		return;
 	}
 
@@ -975,6 +1210,7 @@ void MapReduce(Spec_t *spec)
 		g_spec->outputRecordCount = g_spec->interRecordCount;
 		g_spec->outputAllKeySize = g_spec->interAllKeySize;
 		g_spec->outputAllValSize = g_spec->interAllValSize;
+
 		goto EXIT_MR;
 	}
 

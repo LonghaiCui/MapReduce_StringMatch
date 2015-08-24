@@ -88,6 +88,9 @@ void saven_initialPrefixSum(unsigned int maxNumElements);
 #define MAP_GROUP		0x02
 #define MAP_REDUCE		0x03
 
+#define MAP_REDUCE_ATOMIC    0x01
+#define MAP_REDUCE_NO_ATOMIC 0x02
+
 
 typedef struct
 {
@@ -120,7 +123,7 @@ typedef struct
 	//user specification
 	char		workflow;
 	char		outputToHost;
-
+	int     mapreduceMode;
 	int		numRecTaskMap;
 	int		numRecTaskReduce;
 	int		dimBlockMap;
@@ -133,7 +136,14 @@ __device__ void EmitInterCount(int	keySize,
                                int*	interValsSizePerTask,
                                int*	interCountPerTask);
 
-
+__device__ void EmitIntermediateAtomic(void*		key,
+									   void*		val,
+									   int		keySize,
+									   int		valSize,
+									   char*		interKeys,
+									   char*		interVals,
+									   int4*	interOffsetSizes,
+									   int*	interCount);
 
 __device__ void EmitIntermediate(void*		key, 
 				 void*		val, 
@@ -184,6 +194,26 @@ __device__ void *GetKey(void *key, int4* interOffsetSizes, int index, int valSta
 		EmitInterCount(keySize, valSize, \
 		interKeysSizePerTask, interValsSizePerTask, interCountPerTask)
 
+
+#define MAP_FUNC_ATOMIC \
+	map_atomic(void*		key,\
+			   void*		val,\
+			   int	keySize,\
+			   int	valSize,\
+			   char*	interKeys,\
+			   char*	interVals,\
+			   int4* interOffsetSizes,\
+			   int*	interCount)
+
+#define EMIT_INTERMEDIATE_FUNC_ATOMIC(newKey, newVal, newKeySize, newValSize) \
+	EmitIntermediateAtomic((char*)newKey, \
+			(char*)newVal, \
+			newKeySize, \
+			newValSize, \
+			interKeys, \
+			interVals, \
+			interOffsetSizes,\
+			interCount)
 
 
 #define MAP_FUNC \

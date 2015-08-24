@@ -11,5 +11,6 @@
 
 __device__ void MAP_COUNT_FUNC;
 __device__ void MAP_FUNC;
+__device__ void MAP_FUNC_ATOMIC;
 
 #endif /* MAP_H_ */

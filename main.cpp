@@ -39,8 +39,6 @@ void printFun(void* key, void* val, int keySize, int valSize)
 
 void validate(Spec_t* spec, int num)
 {
-	printf("\n");
-	printf("---------The String Match Results-----------\n");
 	PrintOutputRecords(spec, num, printFun);
 }
 
@@ -51,9 +49,9 @@ void validate(Spec_t* spec, int num)
 //-----------------------------------------------------------------------
 int main( int argc, char** argv) 
 {
-	if (argc < 3)
+	if (argc != 3)
 	{
-		printf("usage: %s datafile keyword mode blocksize\n", argv[0]);
+		printf("usage: %s datafile keyword\n", argv[0]);
 		exit(-1);	
 	}
 	
@@ -62,34 +60,6 @@ int main( int argc, char** argv)
 #ifdef __OUTPUT__
 	spec->outputToHost = 1;
 #endif
-
-	//get map reduce mode, 1: mapreduce with atomic; 2:mapreduce without atomic
-	//default is mapreduce with atomic
-	int mode = MAP_REDUCE_ATOMIC;
-	if (argc == 4)
-	{
-		mode = atoi(argv[3]);
-		if (mode == MAP_REDUCE_ATOMIC || mode == MAP_REDUCE_NO_ATOMIC)
-		{
-			spec->mapreduceMode = mode;
-		}
-		else
-		{
-			spec->mapreduceMode = MAP_REDUCE_ATOMIC;
-		}
-	}
-	spec->mapreduceMode = mode;
-
-	int init_block_size = 1024;
-	//get block size
-	if (argc == 5)
-	{
-		int temp = atoi(argv[4]);
-		if (temp >= 512)
-		{
-			init_block_size = temp;
-		}
-	}
 
 	TimeVal_t alltimer;
 	startTimer(&alltimer);
@@ -101,7 +71,6 @@ int main( int argc, char** argv)
 	FILE *fp = fopen(filename, "r");
 	fseek(fp, 0, SEEK_END);
 	int fileSize = ftell(fp);
-
 	rewind(fp);
     char *h_filebuf = (char*)malloc(fileSize);
 	char* d_filebuf = NULL;
@@ -111,6 +80,7 @@ int main( int argc, char** argv)
 	fclose(fp);
 
 	int keywordSize = strlen(argv[2])+1;
+	printf("the keywordSize = %d\n", keywordSize);
 	char* d_keyword = NULL;
 	CUDA_SAFE_CALL(cudaMalloc((void**)&d_keyword, keywordSize));
 	CUDA_SAFE_CALL(cudaMemcpy(d_keyword, argv[2], keywordSize, cudaMemcpyHostToDevice));
@@ -126,7 +96,7 @@ int main( int argc, char** argv)
 	char* start = h_filebuf;
 	while (1)
 	{
-		int blockSize = init_block_size;
+		int blockSize = 1024;
 		if (offset + blockSize > fileSize)
 			blockSize = fileSize - offset;
 		p += blockSize;
@@ -158,6 +128,7 @@ int main( int argc, char** argv)
 	//----------------------------------------------
 	MapReduce(spec);
 	endTimer("all-test", &alltimer);
+
 	//----------------------------------------------
 	//further processing
 	//----------------------------------------------
